@@ -1,8 +1,3 @@
-"""
-Speech utilities for STT (Speech-to-Text) and TTS (Text-to-Speech) functionality.
-Provides both online (gTTS) and offline (pyttsx3) TTS options.
-"""
-
 import speech_recognition as sr
 from gtts import gTTS
 import pyttsx3
@@ -15,12 +10,6 @@ class SpeechHandler:
     """Handles speech recognition and text-to-speech operations."""
     
     def __init__(self, use_offline_tts: bool = False):
-        """
-        Initialize speech handler.
-        
-        Args:
-            use_offline_tts: If True, use pyttsx3 (offline), else use gTTS (online)
-        """
         self.use_offline_tts = use_offline_tts
         self.recognizer = sr.Recognizer()
         
@@ -44,16 +33,6 @@ class SpeechHandler:
             print("Online TTS (gTTS) will be used")
     
     def listen_to_mic(self, timeout: int = 5, phrase_time_limit: int = 10) -> Tuple[bool, str]:
-        """
-        Listen to microphone and convert speech to text.
-        
-        Args:
-            timeout: Seconds to wait for speech to start
-            phrase_time_limit: Maximum seconds for a single phrase
-            
-        Returns:
-            Tuple of (success, text or error message)
-        """
         try:
             with sr.Microphone() as source:
                 print("Listening... (speak now)")
@@ -85,15 +64,6 @@ class SpeechHandler:
             return False, f"Error during speech recognition: {e}"
     
     def speak_text(self, text: str) -> bool:
-        """
-        Convert text to speech and play it.
-        
-        Args:
-            text: Text to convert to speech
-            
-        Returns:
-            True if successful, False otherwise
-        """
         try:
             if self.use_offline_tts and self.tts_engine:
                 # Use offline TTS (pyttsx3)
@@ -109,15 +79,6 @@ class SpeechHandler:
             return False
     
     def _speak_with_gtts(self, text: str) -> bool:
-        """
-        Use gTTS for text-to-speech (requires internet).
-        
-        Args:
-            text: Text to convert to speech
-            
-        Returns:
-            True if successful, False otherwise
-        """
         try:
             # Create temporary file for audio
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
@@ -147,12 +108,6 @@ class SpeechHandler:
             return False
     
     def test_microphone(self) -> bool:
-        """
-        Test if microphone is working properly.
-        
-        Returns:
-            True if microphone is accessible, False otherwise
-        """
         try:
             with sr.Microphone() as source:
                 print("Microphone test successful")
@@ -162,12 +117,6 @@ class SpeechHandler:
             return False
     
     def list_available_voices(self) -> list:
-        """
-        List available voices for offline TTS (pyttsx3 only).
-        
-        Returns:
-            List of available voice names
-        """
         if not self.use_offline_tts or not self.tts_engine:
             return []
         

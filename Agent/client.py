@@ -1,8 +1,3 @@
-"""
-Client application for the Conversational Agent Backend.
-Supports both text-based and speech-enabled interactions.
-"""
-
 import argparse
 import requests
 import json
@@ -20,16 +15,7 @@ except ImportError:
     print("Warning: Speech utilities not available. Install required packages for speech features.")
 
 class ChatClient:
-    """Client for interacting with the conversational agent backend."""
-    
     def __init__(self, base_url: str = "http://localhost:5000", session_id: Optional[str] = None):
-        """
-        Initialize the chat client.
-        
-        Args:
-            base_url: URL of the Flask backend
-            session_id: Optional session ID for conversation continuity
-        """
         self.base_url = base_url.rstrip('/')
         self.session_id = session_id or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.conversation_history = []
@@ -44,15 +30,6 @@ class ChatClient:
                 print(f"Warning: Speech features disabled due to error: {e}")
     
     def send_message(self, message: str) -> Optional[str]:
-        """
-        Send a message to the backend and get a response.
-        
-        Args:
-            message: User message to send
-            
-        Returns:
-            AI response or None if error
-        """
         try:
             # Prepare request payload
             payload = {
@@ -101,12 +78,6 @@ class ChatClient:
             return None
     
     def get_conversation_history(self) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve conversation history from the backend.
-        
-        Returns:
-            Conversation history or None if error
-        """
         try:
             response = requests.get(f"{self.base_url}/history/{self.session_id}")
             
@@ -121,14 +92,6 @@ class ChatClient:
             return None
     
     def chat_loop(self, use_mic: bool = False, use_tts: bool = False, save_file: Optional[str] = None):
-        """
-        Main chat loop for interactive conversation.
-        
-        Args:
-            use_mic: If True, use microphone for input
-            use_tts: If True, speak AI responses aloud
-            save_file: Optional file path to save conversation
-        """
         print(f"🤖 Conversational Agent Client")
         print(f"📡 Backend: {self.base_url}")
         print(f"🆔 Session: {self.session_id}")
