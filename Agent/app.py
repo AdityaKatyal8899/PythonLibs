@@ -1,189 +1,142 @@
 from flask import Flask, request, jsonify
 from pymongo import MongoClient
 from datetime import datetime
-import genai
 import os
 from dotenv import load_dotenv
+from bson import ObjectId
+import json
 from flask_cors import CORS
 
-# -------------------------
-# Load .env reliably on Windows
-# -------------------------
-# Replace with the full path to your .env file
-dotenv_path = r"C:\Users\AdityaJi\Agent\.env"
-load_dotenv(dotenv_path)
+# ✅ Correct Gemini import
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema import HumanMessage, SystemMessage
 
-# Fetch environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gpt-4o-mini")
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
-DB_NAME = os.getenv('DB_NAME', 'conversational_agent')
+# Load environment variables
+load_dotenv()
 
-print("Loaded GEMINI_API_KEY:", GEMINI_API_KEY)
-print("MongoDB URI:", MONGO_URI)
-
-# -------------------------
-# Configure GenAI
-# -------------------------
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    print("Gemini API key loaded successfully")
-else:
-    print("Warning: GEMINI_API_KEY not found")
-
-# -------------------------
-# Initialize Flask & CORS
-# -------------------------
+# Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
 
-# -------------------------
-# Initialize MongoDB
-# -------------------------
-try:
-    client = MongoClient(MONGO_URI)
-    db = client[DB_NAME]
-    conversations = db['conversations']
-    conversations.create_index("session_id")
-    print("MongoDB connected successfully")
-except Exception as e:
-    print(f"Error connecting to MongoDB: {e}")
-    client = None
+# Database setup
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client["ChatApp"]
+conversations = db["conversations"]
 
-# -------------------------
-# Utility to serialize documents
-# -------------------------
-def serialize_doc(doc):
-    if not doc:
-        return None
-    doc_copy = dict(doc)
-    doc_copy['_id'] = str(doc_copy['_id'])
-    for msg in doc_copy.get('messages', []):
-        if 'timestamp' in msg and isinstance(msg['timestamp'], datetime):
-            msg['timestamp'] = msg['timestamp'].isoformat()
-    if 'timestamp' in doc_copy and isinstance(doc_copy['timestamp'], datetime):
-        doc_copy['timestamp'] = doc_copy['timestamp'].isoformat()
-    return doc_copy
+# Gemini setup
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = "gemini-1.5-flash"
 
-# -------------------------
-# Routes
-# -------------------------
-@app.route('/chat', methods=['POST'])
+chat_model = ChatGoogleGenerativeAI(
+    model=GEMINI_MODEL,
+    temperature=0.7,
+    google_api_key=GOOGLE_API_KEY
+)
+
+# ✅ Custom JSON Encoder for ObjectId and datetime
+class JSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+app.json_encoder = JSONEncoder
+
+# Root endpoint
+@app.route("/")
+def home():
+    return jsonify({"message": "Welcome to Flask Backend!"})
+
+# Chat endpoint
+@app.route("/chat", methods=["POST"])
 def chat():
+    data = request.json
+    session_id = data.get("session_id")
+    user_message = data.get("message", "")
+
+    if not session_id or not user_message:
+        return jsonify({"error": "session_id and message are required"}), 400
+
+    # Push user message into the session document
+    user_msg_doc = {
+        "role": "user",
+        "content": user_message,
+        "timestamp": datetime.utcnow()
+    }
+    conversations.update_one(
+        {"session_id": session_id},
+        {"$push": {"messages": user_msg_doc},
+         "$setOnInsert": {"session_id": session_id, "created_at": datetime.utcnow()}},
+        upsert=True
+    )
+
+    # Fetch last 10 messages for context
+    conversation_doc = conversations.find_one({"session_id": session_id})
+    recent_messages = conversation_doc.get("messages", [])[-10:]
+
+    # Convert messages to LangChain format
+    history = []
+    for msg in recent_messages:
+        if msg["role"] == "user":
+            history.append(HumanMessage(content=msg["content"]))
+        else:
+            history.append(SystemMessage(content=msg["content"]))
+
+    # Generate response using Gemini
     try:
-        data = request.get_json()
-        if not data or 'session_id' not in data or 'message' not in data:
-            return jsonify({'error': 'Missing session_id or message'}), 400
-        
-        session_id = data['session_id']
-        user_message = data['message']
-        if not session_id or not user_message:
-            return jsonify({'error': 'session_id and message cannot be empty'}), 400
-        
-        if not client:
-            return jsonify({'error': 'Database connection failed'}), 500
-        if not GEMINI_API_KEY:
-            return jsonify({'error': 'Gemini API not configured'}), 500
-        
-        # Save user message
-        user_msg_doc = {
-            "role": "user",
-            "content": user_message,
-            "timestamp": datetime.utcnow()
-        }
-        conversations.update_one(
-            {"session_id": session_id},
-            {"$push": {"messages": user_msg_doc},
-             "$setOnInsert": {"session_id": session_id, "timestamp": datetime.utcnow()}},
-            upsert=True
-        )
-        
-        # Fetch last 10 messages
-        conversation_doc = conversations.find_one({"session_id": session_id})
-        if not conversation_doc:
-            return jsonify({'error': 'Failed to retrieve conversation'}), 500
-        
-        recent_messages = conversation_doc['messages'][-10:]
-        genai_messages = [{"role": "assistant" if msg['role']=='agent' else msg['role'], "content": msg['content']} for msg in recent_messages]
-        
-        # Call GenAI
-        try:
-            response = genai.chat.create(
-                model=GEMINI_MODEL,
-                messages=genai_messages,
-                max_output_tokens=500,
-                temperature=0.7
-            )
-            agent_response = response.output_text
-        except Exception as e:
-            return jsonify({'error': f'GenAI API error: {str(e)}'}), 500
-        
-        # Save agent response
-        agent_msg_doc = {
-            "role": "agent",
-            "content": agent_response,
-            "timestamp": datetime.utcnow()
-        }
-        conversations.update_one({"session_id": session_id}, {"$push": {"messages": agent_msg_doc}})
-        
-        return jsonify({
-            'session_id': session_id,
-            'response': agent_response,
-            'timestamp': datetime.utcnow().isoformat()
-        })
-        
+        agent_message = chat_model.invoke(history)
+        agent_response = agent_message.content
     except Exception as e:
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        print("GenAI invocation error:", e)
+        agent_response = "Sorry, I am having trouble generating a response."
 
-@app.route('/history/<session_id>', methods=['GET'])
-def get_history(session_id):
+    # Push agent response into the same session document
+    agent_msg_doc = {
+        "role": "assistant",
+        "content": agent_response,
+        "timestamp": datetime.utcnow()
+    }
+    conversations.update_one(
+        {"session_id": session_id},
+        {"$push": {"messages": agent_msg_doc}}
+    )
+
+    return jsonify({"response": agent_response})
+
+# Fetch conversation by session
+@app.route("/messages/<session_id>", methods=["GET"])
+def get_messages(session_id):
+    conversation_doc = conversations.find_one({"session_id": session_id})
+    if not conversation_doc:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(conversation_doc)
+
+# Clear a session's messages
+@app.route("/clear/<session_id>", methods=["POST"])
+def clear_messages(session_id):
+    conversations.delete_one({"session_id": session_id})
+    return jsonify({"message": f"Session {session_id} cleared!"})
+
+# Health check
+@app.route("/health", methods=["GET"])
+def health():
     try:
-        if not client:
-            return jsonify({'error': 'Database connection failed'}), 500
-        if not session_id:
-            return jsonify({'error': 'session_id is required'}), 400
-        
-        conversation_doc = conversations.find_one({"session_id": session_id})
-        if not conversation_doc:
-            return jsonify({'error': 'Session not found'}), 404
-        
-        return jsonify(serialize_doc(conversation_doc))
+        client.admin.command('ping')
+        mongo_status = "connected"
     except Exception as e:
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        mongo_status = f"disconnected ({str(e)})"
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    try:
-        mongo_status = "connected" if client and client.admin.command('ping') else "disconnected"
-        gemini_status = "configured" if GEMINI_API_KEY else "not configured"
-        return jsonify({
-            'status': 'healthy',
-            'mongodb': mongo_status,
-            'gemini': gemini_status,
-            'timestamp': datetime.utcnow().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e),
-            'timestamp': datetime.utcnow().isoformat()
-        }), 500
+    gemini_status = "configured" if GOOGLE_API_KEY else "not configured"
 
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Endpoint not found'}), 404
+    return jsonify({
+        "status": "connected" if mongo_status == "connected" else "disconnected",
+        "mongodb": mongo_status,
+        "openai": gemini_status,  # points to Gemini for frontend
+        "timestamp": datetime.utcnow().isoformat()
+    })
 
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error'}), 500
-
-# -------------------------
-# Main entry
-# -------------------------
-if __name__ == '__main__':
-    if not GEMINI_API_KEY:
-        print("Warning: GEMINI_API_KEY not set. Chat functionality will not work.")
-    if not MONGO_URI or MONGO_URI == 'mongodb://localhost:27017/':
-        print("Warning: Using default MongoDB URI. Set MONGO_URI environment variable for production.")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(debug=True)
