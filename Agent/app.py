@@ -53,56 +53,48 @@ def home():
 # Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
+    data = request.get_json()
     session_id = data.get("session_id")
-    user_message = data.get("message", "")
+    user_message = data.get("message")
 
     if not session_id or not user_message:
         return jsonify({"error": "session_id and message are required"}), 400
 
-    # Push user message into the session document
-    user_msg_doc = {
-        "role": "user",
-        "content": user_message,
-        "timestamp": datetime.utcnow()
-    }
+    # Save user message
+    user_doc = {"role": "user", "content": user_message, "timestamp": datetime.utcnow()}
     conversations.update_one(
         {"session_id": session_id},
-        {"$push": {"messages": user_msg_doc},
-         "$setOnInsert": {"session_id": session_id, "created_at": datetime.utcnow()}},
+        {"$push": {"messages": user_doc}, "$setOnInsert": {"session_id": session_id, "created_at": datetime.utcnow()}},
         upsert=True
     )
 
-    # Fetch last 10 messages for context
+    # Fetch last 20 messages for context
     conversation_doc = conversations.find_one({"session_id": session_id})
-    recent_messages = conversation_doc.get("messages", [])[-10:]
+    recent_msgs = conversation_doc.get("messages", [])[-20:]
 
-    # Convert messages to LangChain format
+    # Prepare messages for LangChain
     history = []
-    for msg in recent_messages:
+    for msg in recent_msgs:
         if msg["role"] == "user":
             history.append(HumanMessage(content=msg["content"]))
         else:
             history.append(SystemMessage(content=msg["content"]))
 
-    # Generate response using Gemini
+    # Add identity context
+    identity = SystemMessage(content="Your name is Omaju, a fun and friendly AI ChatBOT, created by Aditya Katyal. Don't specify it every time; mention it only if user asks.")
+    full_history = [identity] + history
+
+    # Generate AI response
     try:
-        agent_message = chat_model.invoke(history)
-        agent_response = agent_message.content
+        agent_msg = chat_model.invoke(full_history)
+        agent_response = agent_msg.content
     except Exception as e:
         print("GenAI invocation error:", e)
         agent_response = "Sorry, I am having trouble generating a response."
 
-    # Push agent response into the same session document
-    agent_msg_doc = {
-        "role": "assistant",
-        "content": agent_response,
-        "timestamp": datetime.utcnow()
-    }
-    conversations.update_one(
-        {"session_id": session_id},
-        {"$push": {"messages": agent_msg_doc}}
-    )
+    # Save AI response
+    ai_doc = {"role": "assistant", "content": agent_response, "timestamp": datetime.utcnow()}
+    conversations.update_one({"session_id": session_id}, {"$push": {"messages": ai_doc}})
 
     return jsonify({"response": agent_response})
 
@@ -111,7 +103,22 @@ def chat():
 def get_messages(session_id):
     conversation_doc = conversations.find_one({"session_id": session_id})
     if not conversation_doc:
-        return jsonify({"error": "Session not found"}), 404
+        # New session → create it with Omaju's greeting
+        greeting = {
+            "role": "assistant",
+            "content": "Hey! I am **Omaju**, your buddy for lone times. How may I help?",
+            "timestamp": datetime.utcnow()
+        }
+        conversations.insert_one({
+            "session_id": session_id,
+            "created_at": datetime.utcnow(),
+            "messages": [greeting]
+        })
+        return jsonify({
+            "session_id": session_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "messages": [greeting]
+        })
     return jsonify(conversation_doc)
 
 # Clear a session's messages
@@ -132,9 +139,9 @@ def health():
     gemini_status = "configured" if GOOGLE_API_KEY else "not configured"
 
     return jsonify({
-        "status": "connected" if mongo_status == "connected" else "disconnected",
+        "status": "healthy" if mongo_status == "connected" else "unhealthy",
         "mongodb": mongo_status,
-        "openai": gemini_status,  # points to Gemini for frontend
+        "genai": gemini_status,
         "timestamp": datetime.utcnow().isoformat()
     })
 
